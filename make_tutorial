@@ -1,0 +1,403 @@
+# Makefile Tutorial
+
+[TOC]
+
+参考链接: 
+1. 陈皓的博客, "跟我一起写Makefile" http://blog.csdn.net/haoel/article/category/9198/3
+2. GNU make: https://www.gnu.org/software/make/manual/html_node/index.html#SEC_Contents
+
+## 自己经验
+执行make时
+```bash
+make [target_name]
+```
+如果不给target_name, 则make会默认生成第一个target. 
+
+clean 放在文件最后
+使用变量时, 两种方法, 
+```make
+objects_1 = a.o
+objects_2 = a
+target: $(objects_1)	//用这种, 第二种没法加多个文件
+target: $(objects_2).o
+```
+
+### Question
+1. `@xxx@` 
+2. `%`
+3. `$(foreach lib,$(LIBRARIES),$(eval $(call ADD_INSTALL_TARGETS,$(lib))))`
+
+### 自己的目标
+1. 能读懂别人的makefile
+2. 编写自己的库
+
+
+## 写makefile
+### makefile内容
+**隐含规则**: 根据文件名称推导出何时以何种方式make. 
+**directive**: 
+1. include makefile
+2. 条件make
+3. 定义包含多行值的变量
+**comment**: 使用`#`符号
+1. 不能在引用variable, 或call function时使用. 
+2. recipe前用#, 要看shell是否把它当comment. 
+3. directive define, #不会被当comment.
+
+#### 分离过长的行
+分两种: 都使用反斜线`\`
+1. 分离非recipe行
+反斜线前后, 及下一行前的空白都变成一个空格.
+2. 分离recipe行
+反斜线与\newline之间的空白, 以及反斜线, \newline本身都不会删除, 而是传给shell; 被删除的是下一行的第一个字符(prefix character, 一般是\tab).
+**注意：反斜线后一定不要有空格**
+```bash
+all : ; @echo 'hello \
+        world' ; echo "hello \
+    world"
+```
+传递给**一个**shell的内容:
+```bash
+echo 'hello \
+world' ; echo "hello \
+    world"
+```
+打印结果
+```bash
+hello \
+world
+hello     world
+```
+bash处理单引号和双引号之间的反斜线不一样. 
+
+如果需要单引号之间的反斜线也要删除, 可以用如下方法
+```bash
+HELLO = 'hello \
+world'
+all : ; @echo $(HELLO)
+```
+
+### makefile命名
+make会自动按顺序查找GNUmakefile, makefile, Makefile. 
+也可以给参数指定makefile
+```bash
+make -f name.mk -f name2.mk
+```
+如上可以执行两个makefile, 实际上是被解读为一个makefile. 
+
+### overriding of another makefile
+有两个makefile时, 一个是GNUmakefile, 会读取GNUmakefile, 内容如下; 如果makefile中有另一个target bar,
+```bash
+foo:
+	frobnicate > foo
+%: force
+    @$(MAKE) -f Makefile $@
+force: ;
+```
+那make bar时读取GNUmakefile没找到bar, 就执行`make -f Makefile`, force表示不管target是否已经存在都要执行.
+force的rule是一个empty recipe, 是为了排除隐式规则的影响. 
+
+### make如何读取makefile
+分两个phase:
+1. mk读取: 读取所有的makefile, 确定target, 以及生成target的rules. 
+2. 目标更新: 执行
+下面给出哪些是立即知道的, 哪些是读完makefile才推导出的. 
+
+*变量赋值*
+
+```bash
+immediate = deferred
+immediate ?= deferred
+immediate := immediate
+immediate ::= immediate
+immediate += deferred or immediate
+immediate != immediate
+
+define immediate
+  deferred
+endef
+
+define immediate =
+  deferred
+endef
+
+define immediate ?=
+  deferred
+endef
+
+define immediate :=
+  immediate
+endef
+
+define immediate ::=
+  immediate
+endef
+
+define immediate +=
+  deferred or immediate
+endef
+
+define immediate !=
+  immediate
+endef
+```
+
+*conditional directives*
+是immediate. 所以自动变量是不能放在conditional directives中的. 如果要用可以放到recipe中, 使用shell的条件句法.
+
+*rules定义*
+```bash
+immediate : immediate ; deferred
+    deferred
+```
+
+### 二次展开
+二次展开只适用于prerequisite, 需要在prerequisite之前声明`.SECONDEXPANSION:`
+```bash
+.SECONDEXPANSION:
+ONEVAR = onefile
+TWOVAR = twofile
+myfile: $(ONEVAR) $$(TWOVAR)
+```
+第二个变量是被excape的, 第一次expand后变为`$(TWOVAR)`也叫unescape, 第二次才是真正expand, 变为`twofile`, 下面的例子给出这个用法的一个场景
+```bash
+.SECONDEXPANSION:
+AVAR = top
+onefile: $(AVAR)
+twofile: $$(AVAR)
+AVAR = bottom
+```
+结果, `onefile`为`top`, `twofile`是`bottom`. 
+
+**更加厉害的例子, 与自动变量一起使用**
+```bash
+.SECONDEXPANSION:
+main_OBJS := main.o try.o test.o
+lib_OBJS := lib.o api.o
+
+main lib: $$($$@_OBJS)
+```
+
+
+## 写rules
+rules用来说明什么时候以什么方式remake某个文件(一般叫做目标, 一般一个rule只有一个目标). 
+rules包含该目标文件依赖哪些文件, 以及recipe来创建或更新该目标. 
+默认第一个目标就是终极目标(也有两个例外). 
+a name of the form a(m) represents member m in archive file a (see Archive Members as Targets)
+
+```bash
+targets : prerequisites
+        recipe
+        …
+```
+### prequisities
+有两种prerequisites: normal, 和 order only. 
+normal prerequisites: 只有给prerequisites的recipe都执行完毕, target的recipe才开始; 任意一个prerequisites有更新都要重新编译. 
+order only: 指定顺序编译, 比如生成文件的目录, 不会因为生成目录不停更新而不断编译源文件. 
+
+```bash
+targets : normal-prerequisites | order-only-prerequisites
+```
+
+```bash
+OBJDIR := objdir
+OBJS := $(addprefix $(OBJDIR)/,foo.o bar.o baz.o)
+
+$(OBJDIR)/%.o : %.c
+        $(COMPILE.c) $(OUTPUT_OPTION) $<
+
+all: $(OBJS)
+
+$(OBJS): | $(OBJDIR)
+
+$(OBJDIR):
+        mkdir $(OBJDIR)
+```
+
+### 使用通配符
+可以使用通配符表示多个文件，比如`*.c`，
+recipe中的通配符会在shell中执行时展开，变量中不会展开，除非使用函数wildcard.
+```bash
+var = $(wildcard *.c)   // 会在变量中展开
+var = *.c               // 不会在变量中展开
+```
+函数wildcard常见用法
+
+```bash
+objects := $(patsubst %.c,%.o, %(wildcard *.c))
+foo: $(objects)
+	gcc -o foo $(objects)
+```
+
+
+### 为prerequisites设定搜寻路径
+#### 通用搜寻`VPATH`
+配置变量`VPATH`
+```bash
+VPATH := src:inc // 用冒号或者空格分离
+```
+其效果为
+```bash
+foo.o:foo.c   // 变为下一行
+foo.o:src/foo.c
+```
+
+#### `vpath`为特定文件设置查找路径
+小写`vpath`, 为特定pattern设定查找路径。语法如下
+```bash
+vpath pattern dir
+vpath %.c dir_a:dir_b  // 用冒号分隔
+```
+#### 对库进行路径查找
+`-lname`查找库libname.so或者libname.a，查找路径顺序为：1.当前路径，2.vpath指定路径，3.VPATH路径，4.`/usr/lib`,`prefix/lib`
+```bash
+foo : foo.c -lcurses
+        cc $^ -o $@
+```
+
+
+### phony 目标
+该目标不是具体文件, 是个"假目标". 如all, clean等. 
+
+### 
+
+
+
+## 写recipe
+有两种语法, 一个是make语法, 一个是shell语法. 
+
+### recipe echoing
+正常recipe会打印每条指令, 使用`@`可以不打印该信息. 
+`-n`或者`--just-print`会打印recipes, 但是不执行, 上面的参数不起作用. 
+
+### recipe执行
+正常每个recipe都会启用一个shell, 要使上一个recipe(比如cd)对下个recipe有效, 可以将下个recipe放在同一行. 或者修改`.ONESHELL`special target. 
+```bash
+foo : bar/lose
+	cd $(@D) && gobble $(@F) > ../$@
+```
+使用AND`&&`参数使得如果cd指令出错, 后面的脚本将不执行. 
+
+### 并行运行
+正常make会一条一条recipe执行, 使用参数`-j`,`--jobs`告诉make同时执行多个recipes. 
+在MS-DOS上没有用. 
+`-j`后面接数字, 即几条recipe同时执行, 该值没有限制. 
+`-l`或者`--max-load`用来限制并行的数量, 后面接一个浮点数. 
+```bash
+-l 2.5
+```
+不允许make超过一个job如果平均负载为2.5. 
+
+### recipe出错
+make会检查返回值, 有一些不重要的recipe, 比如mkdir, 需要忽略其错误, 需要在开头加`-`. 
+```bash
+clean:
+	-rm -f *.o
+```
+如果使用`-i`参数, 则所有recipe返回值都被忽略. 
+如果使用`-k`或`--keep-going`参数, 会继续执行剩下的部分. 
+如果执行过程中出错, 一定要删掉生成的目标文件, 因为它是不正确的, 而时间又是最新的, 可能不会被继续编译. 
+
+
+### 递归调用make
+
+#### MAKE变量工作方式
+`make -t`等指令不会导致包含MAKE变量的recipe不
+
+#### 与sub-make共用变量
+使用`export`. 
+```bash
+export variable = value
+```
+```bash
+export
+```
+默认所有字母数字下划线变量都被export, 最后一个export/unexport作用于整个makefile. 
+变量MAKEFLAGS自动被export. 
+变量MAKELEVEL, `0`代表当前make, `1`代表sub-make. 
+**变量MAKEFILE**不懂其用法. 
+
+### 与sub-make共享options
+`-s`, `-k`是被存在MAKEFLAGS中, 所以会被自动传递到sub-make, `-C`,`-f`,`-o`,`-W`不在MAKEFLAGS中. 
+`-j`在支持它的系统中会被传递. 
+也可以自己设定MAKEFLAGS的值:
+```bash
+subsystem:
+	cd subdir && $(MAKE) MAKEFLAGS=
+```
+命令行参数真正存在MAKEOVERRIDES中, MAKEFLAGS参考该变量. 
+make会默认读取一个连字符, 然后将选项放入以空格分离的word中, 如果选项不正确, 不会导致错误. 
+
+### canned recipes
+把recipes定义为宏(变量)
+```bash
+define run-yacc =
+yacc $(firstword $^)
+mv y.tab.c $@
+endef
+```
+
+```bash
+foo.c : foo.y
+    $(run-yacc)
+```
+
+### empty recipes
+```bash
+target:
+<tab>|
+```
+为了防止隐式规则对target造成影响. 
+
+
+## 变量
+变量是大小写区分的. 变量是全局的.
+
+### target-specific 变量
+除了自动变量, 这是另一个可以有不同值的变量, 它的值只对当前target有效. 
+```bash
+target … : variable-assignment
+```
+也可以使用`override`,`export`, `private`等特殊关键词. 
+与其他makefile中定义的变量有同样优先级, 但是外部参数所给变量优先级更高, 不过可以使用`override`提高target-specific变量. 
+**注意**
+一个prerequisite在被make调用的当次只会被生成一次, 所以如果该prerequisite用于多个target, 且这些target对这个prerequisite有不同的参数配置, 那只默认第一个生成的. 其他不会再生成. 
+
+
+## functions
+
+### `call` function
+```vim
+$(call variable,param,param,…)
+```
+call函数在解析这个指令时会给各参数一个临时变量:$0, $1, $2 与variable, param 对应.
+参数没有数量限制, variable是名字, 不是reference, 所以不用'$'或者括号.
+如果variable是个内置函数名, 则调用该函数, 且后续参数作为该函数的参数.
+```vim
+reverse = $(2) $(1)
+foo = $(call reverse,a,b)
+```
+foo包含'b,a'. 
+
+### `value` function
+不展开, 直接读取变量值. 
+```bash
+FOO = $PATH
+all:
+    @echo $(FOO)
+    @echo $(value FOO)
+```
+上面例子第一recipe输出: ATH
+第二个recipe输出: PATH的值
+
+### `eval` function
+需要两次expansion.
+**不是很懂.**
+
+
+
+## 如何运行make
+
+### 不运行recipe
+使用`-t`,`-touch`等参数将不执行recipe. 
+
